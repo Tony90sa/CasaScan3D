@@ -2,12 +2,15 @@ package com.tony.casascan3d
 
 import android.app.Activity
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
 import android.provider.MediaStore
 import android.view.Gravity
 import android.widget.Button
+import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.FileProvider
@@ -23,6 +26,8 @@ class MainActivity : Activity() {
     private val captureRequest = 201
     private val exportRequest = 202
     private lateinit var status: TextView
+    private lateinit var guidance: TextView
+    private lateinit var preview: ImageView
     private lateinit var photoButton: Button
     private lateinit var exportButton: Button
     private var currentSession = ""
@@ -34,25 +39,49 @@ class MainActivity : Activity() {
         currentSession = getPreferences(MODE_PRIVATE).getString("session", "") ?: ""
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(40, 56, 40, 30)
+            setPadding(32, 36, 32, 36)
             gravity = Gravity.CENTER_HORIZONTAL
         }
-        val title = TextView(this).apply { text = "CasaScan 3D"; textSize = 29f }
-        status = TextView(this).apply { textSize = 17f; setPadding(0, 30, 0, 30) }
-        val newButton = Button(this).apply { text = "Nuova scansione"; setOnClickListener { newSession() } }
-        photoButton = Button(this).apply { text = "Scatta foto"; setOnClickListener { takePhoto() } }
-        exportButton = Button(this).apply { text = "Esporta ZIP per PC"; setOnClickListener { exportZip() } }
-        val help = TextView(this).apply {
-            text = "Scatta foto sovrapposte mentre ti sposti lentamente. Mantieni lo stesso zoom. Esporta lo ZIP e ricostruisci con COLMAP sul PC."
-            textSize = 15f
-            setPadding(0, 25, 0, 0)
+        val title = TextView(this).apply { text = "CasaScan 3D"; textSize = 28f }
+        status = TextView(this).apply { textSize = 18f; setPadding(0, 22, 0, 16) }
+        val newButton = Button(this).apply {
+            text = "Nuova scansione"
+            setOnClickListener { newSession() }
         }
-        listOf(title, status, newButton, photoButton, exportButton, help).forEach { layout.addView(it) }
-        setContentView(layout)
+        photoButton = Button(this).apply {
+            text = "Scatta foto"
+            setOnClickListener { takePhoto() }
+        }
+        exportButton = Button(this).apply {
+            text = "Esporta ZIP per PC"
+            setOnClickListener { exportZip() }
+        }
+        guidance = TextView(this).apply {
+            textSize = 16f
+            setPadding(0, 22, 0, 20)
+        }
+        val previewTitle = TextView(this).apply {
+            text = "Ultima fotografia (riferimento per lo scatto successivo)"
+            textSize = 15f
+        }
+        preview = ImageView(this).apply {
+            adjustViewBounds = true
+            maxHeight = (resources.displayMetrics.density * 300).toInt()
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            contentDescription = "Anteprima dell'ultima foto acquisita"
+        }
+        listOf(title, status, newButton, photoButton, exportButton, guidance, previewTitle, preview)
+            .forEach { layout.addView(it) }
+        setContentView(ScrollView(this).apply { addView(layout) })
         updateUi()
     }
 
     private fun sessionDir(): File = File(filesDir, "captures/$currentSession")
+
+    private fun photos(): List<File> =
+        if (currentSession.isBlank()) emptyList()
+        else sessionDir().listFiles { f -> f.isFile && f.extension.equals("jpg", true) }
+            ?.sortedBy { it.name } ?: emptyList()
 
     private fun newSession() {
         currentSession = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
@@ -61,10 +90,31 @@ class MainActivity : Activity() {
     }
 
     private fun updateUi() {
-        photoCount = if (currentSession.isBlank()) 0 else sessionDir().listFiles { f -> f.extension.lowercase() == "jpg" }?.size ?: 0
-        status.text = if (currentSession.isBlank()) "Inizia una nuova scansione" else "Sessione: $currentSession\nFoto acquisite: $photoCount"
+        val files = photos()
+        photoCount = files.size
+        status.text = if (currentSession.isBlank()) {
+            "Inizia una nuova scansione"
+        } else {
+            "Sessione: $currentSession\nFoto acquisite: $photoCount / 40-60 consigliate"
+        }
         photoButton.isEnabled = currentSession.isNotBlank()
         exportButton.isEnabled = photoCount > 0
+        guidance.text = when {
+            currentSession.isBlank() -> "Crea una sessione per iniziare."
+            photoCount == 0 -> "Parti da un angolo della stanza. Mantieni lo zoom fisso e fotografa dettagli riconoscibili."
+            photoCount < 10 -> "Spostati lateralmente di circa 20-40 cm tra gli scatti. Mantieni il 70-80% della scena in comune con la foto precedente."
+            photoCount < 40 -> "Continua lungo il perimetro della stanza. Inquadra mobili e spigoli da posizioni diverse, non ruotare soltanto sul posto."
+            else -> "Copri anche gli angoli, le parti alte e i dettagli mancanti. Controlla che le fotografie consecutive condividano elementi riconoscibili."
+        }
+        preview.setImageDrawable(null)
+        files.lastOrNull()?.let { file ->
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(file.absolutePath, bounds)
+            val sample = generateSequence(1) { it * 2 }
+                .first { bounds.outWidth / it <= 1000 && bounds.outHeight / it <= 1000 }
+            val options = BitmapFactory.Options().apply { inSampleSize = sample }
+            preview.setImageBitmap(BitmapFactory.decodeFile(file.absolutePath, options))
+        }
     }
 
     private fun takePhoto() {
@@ -77,8 +127,9 @@ class MainActivity : Activity() {
             addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
             clipData = android.content.ClipData.newUri(contentResolver, "CasaScan photo", uri)
         }
-        try { startActivityForResult(intent, captureRequest) }
-        catch (e: Exception) {
+        try {
+            startActivityForResult(intent, captureRequest)
+        } catch (e: Exception) {
             pendingPhoto = null
             Toast.makeText(this, "Fotocamera non disponibile: ${e.message}", Toast.LENGTH_LONG).show()
         }
@@ -98,7 +149,7 @@ class MainActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         when (requestCode) {
             captureRequest -> {
-                if (resultCode != RESULT_OK) pendingPhoto?.delete()
+                if (resultCode != RESULT_OK || pendingPhoto?.length() == 0L) pendingPhoto?.delete()
                 pendingPhoto = null
                 updateUi()
             }
@@ -114,15 +165,15 @@ class MainActivity : Activity() {
     }
 
     private fun writeZip(destination: Uri) {
-        val photos = sessionDir().listFiles { f -> f.isFile && f.extension.lowercase() == "jpg" }?.sortedBy { it.name } ?: emptyList()
-        require(photos.isNotEmpty()) { "Nessuna foto" }
+        val files = photos()
+        require(files.isNotEmpty()) { "Nessuna foto" }
         contentResolver.openOutputStream(destination)?.use { output ->
             ZipOutputStream(output).use { zip ->
-                val manifest = """{"format":"CasaScan3D-v1","session":"$currentSession","count":${photos.size}}"""
+                val manifest = """{"format":"CasaScan3D-v1","session":"$currentSession","count":${files.size}}"""
                 zip.putNextEntry(ZipEntry("manifest.json"))
                 zip.write(manifest.toByteArray(Charsets.UTF_8))
                 zip.closeEntry()
-                photos.forEach { photo ->
+                files.forEach { photo ->
                     zip.putNextEntry(ZipEntry("images/${photo.name}"))
                     FileInputStream(photo).use { it.copyTo(zip) }
                     zip.closeEntry()
